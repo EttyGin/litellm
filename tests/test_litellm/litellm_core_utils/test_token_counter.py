@@ -367,22 +367,20 @@ def test_openai_token_with_image_and_text():
     "model, base_model, input_tokens, user_max_tokens, expected_value",
     [
         ("random-model", "random-model", 1024, 1024, 1024),
-        ("command", "command", 1000000, None, None),  # model max = 4096
-        ("command", "command", 4000, 256, 96),  # model max = 4096
-        ("command", "command", 4000, 10, 10),  # model max = 4096
-        ("gpt-3.5-turbo", "gpt-3.5-turbo", 4000, 5000, 4096),  # model max output = 4096
+        ("command", "command", 1000000, None, None),
+        ("command", "command", 4000, 256, 256),
+        ("command", "command", 4000, 10, 10),
+        ("gpt-3.5-turbo", "gpt-3.5-turbo", 4000, 5000, 5000),
     ],
 )
 def test_get_modified_max_tokens(
     model, base_model, input_tokens, user_max_tokens, expected_value
 ):
     """
-    - Test when max_output is not known => expect user_max_tokens
-    - Test when max_output == max_input,
-        - input > max_output, no max_tokens => expect None
-        - input + max_tokens > max_output => expect remainder
-        - input + max_tokens < max_output => expect max_tokens
-    - Test when max_tokens > max_output => expect max_output
+    Fork divergence regression test: get_modified_max_tokens is a pure
+    passthrough and must return user_max_tokens unchanged in every scenario,
+    including the ones upstream rewrites (shared-window remainder, max-output
+    cap). Fails if an upstream merge reintroduces the rewrite.
     """
     args = locals()
     import litellm
