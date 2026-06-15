@@ -1,0 +1,133 @@
+diff --git a/litellm/litellm_core_utils/token_counter.py b/litellm/litellm_core_utils/token_counter.py
+index a2f5334f0c..68c08482e3 100644
+--- a/litellm/litellm_core_utils/token_counter.py
++++ b/litellm/litellm_core_utils/token_counter.py
+@@ -54,17 +54,77 @@ def get_modified_max_tokens(
+     buffer_num: Optional[float],
+ ) -> Optional[int]:
+     """
+-    Fork divergence from upstream: pure passthrough; never rewrites max_tokens.
+-
+-    Upstream shrinks max_tokens against a locally estimated context budget. Its
+-    shared-window heuristic (max_input_tokens == max_output_tokens) misfires for
+-    registry models with independent input and output limits, silently cutting
+-    max_tokens by the prompt size and truncating agent responses. The provider
+-    enforces window limits authoritatively, so the caller's value is forwarded
+-    unchanged. The signature is kept because the @client wrapper in utils.py
+-    invokes this with all six keyword arguments.
++    Params:
++
++    Returns the user's max output tokens, adjusted for:
++    - the size of input - for models where input + output can't exceed X
++    - model max output tokens - for models where there is a separate output token limit
+     """
+-    return user_max_tokens
++    try:
++        if user_max_tokens is None:
++            return None
++
++        ## MODEL INFO
++        _model_info = litellm.get_model_info(model=model)
++
++        max_output_tokens = litellm.get_max_tokens(
++            model=base_model
++        )  # assume min context window is 4k tokens
++
++        ## UNKNOWN MAX OUTPUT TOKENS - return user defined amount
++        if max_output_tokens is None:
++            return user_max_tokens
++
++        input_tokens = litellm.token_counter(model=base_model, messages=messages)
++
++        # token buffer
++        if buffer_perc is None:
++            buffer_perc = 0.1
++        if buffer_num is None:
++            buffer_num = 10
++        token_buffer = max(
++            buffer_perc * input_tokens, buffer_num
++        )  # give at least a 10 token buffer. token counting can be imprecise.
++
++        input_tokens += int(token_buffer)
++        verbose_logger.debug(
++            f"max_output_tokens: {max_output_tokens}, user_max_tokens: {user_max_tokens}"
++        )
++        ## CASE 1: input + output share one context window. Chat models with equal
++        ## input/output limits document independent budgets (output may use the full
++        ## window), so only legacy completion-mode models are treated as shared.
++        if (
++            _model_info["max_input_tokens"] == max_output_tokens
++            and _model_info.get("mode") == "completion"
++        ):
++            verbose_logger.debug(
++                f"input_tokens: {input_tokens}, max_output_tokens: {max_output_tokens}"
++            )
++            if input_tokens > max_output_tokens:
++                pass  # allow call to fail normally - don't set max_tokens to negative.
++            elif (
++                user_max_tokens + input_tokens > max_output_tokens
++            ):  # we can still modify to keep it positive but below the limit
++                verbose_logger.debug(
++                    f"MODIFYING MAX TOKENS - user_max_tokens={user_max_tokens}, input_tokens={input_tokens}, max_output_tokens={max_output_tokens}"
++                )
++                user_max_tokens = int(max_output_tokens - input_tokens)
++        ## CASE 2: user_max_tokens> model max output tokens
++        elif user_max_tokens > max_output_tokens:
++            user_max_tokens = max_output_tokens
++
++        verbose_logger.debug(
++            f"litellm.litellm_core_utils.token_counter.py::get_modified_max_tokens() - user_max_tokens: {user_max_tokens}"
++        )
++
++        return user_max_tokens
++    except Exception as e:
++        verbose_logger.debug(
++            "litellm.litellm_core_utils.token_counter.py::get_modified_max_tokens() - Error while checking max token limit: {}\nmodel={}, base_model={}".format(
++                str(e), model, base_model
++            )
++        )
++        return user_max_tokens
+ 
+ 
+ def resize_image_high_res(
+diff --git a/tests/test_litellm/litellm_core_utils/test_token_counter.py b/tests/test_litellm/litellm_core_utils/test_token_counter.py
+index 5c337b8923..0ac459b5cf 100644
+--- a/tests/test_litellm/litellm_core_utils/test_token_counter.py
++++ b/tests/test_litellm/litellm_core_utils/test_token_counter.py
+@@ -368,19 +368,30 @@ def test_openai_token_with_image_and_text():
+     [
+         ("random-model", "random-model", 1024, 1024, 1024),
+         ("command", "command", 1000000, None, None),
+-        ("command", "command", 4000, 256, 256),
++        ("command", "command", 4000, 256, 96),
+         ("command", "command", 4000, 10, 10),
+-        ("gpt-3.5-turbo", "gpt-3.5-turbo", 4000, 5000, 5000),
++        (
++            "ai21.jamba-1-5-large-v1:0",
++            "ai21.jamba-1-5-large-v1:0",
++            250000,
++            256000,
++            256000,
++        ),
++        ("gpt-3.5-turbo", "gpt-3.5-turbo", 4000, 5000, 4096),
+     ],
+ )
+ def test_get_modified_max_tokens(
+     model, base_model, input_tokens, user_max_tokens, expected_value
+ ):
+     """
+-    Fork divergence regression test: get_modified_max_tokens is a pure
+-    passthrough and must return user_max_tokens unchanged in every scenario,
+-    including the ones upstream rewrites (shared-window remainder, max-output
+-    cap). Fails if an upstream merge reintroduces the rewrite.
++    - max_output unknown => passthrough user_max_tokens
++    - shared-window legacy model (mode=completion, max_input == max_output):
++        - input > max_output, no max_tokens => None
++        - input + max_tokens > max_output => shrink to remainder
++        - input + max_tokens < max_output => unchanged
++    - chat model with equal input/output limits (independent output budget) =>
++      Case 1 skipped, passthrough even when input + max_tokens > max_output
++    - chat model, max_tokens > max_output => cap at max_output
+     """
+     args = locals()
+     import litellm

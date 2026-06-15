@@ -1,0 +1,18 @@
+# The patch as a ConfigMap, for the no-rebuild Helm approach.
+# Apply in the same namespace as the LiteLLM release:
+#   kubectl apply -n <ns> -f configmap.yaml
+#
+# Keep this in sync with deploy/sitecustomize.py.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-maxtokens-patch
+data:
+  sitecustomize.py: |
+    import litellm._lazy_imports as _li
+
+    def _passthrough_max_tokens(*, user_max_tokens=None, **kwargs):
+        return user_max_tokens
+
+    _li._get_modified_max_tokens_func = _passthrough_max_tokens
+    print("[litellm-patch] max_tokens passthrough installed", flush=True)

@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: llm
+      POSTGRES_PASSWORD: llm
+      POSTGRES_DB: litellm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm -d litellm"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mock-llm:
+    image: python:3.11-slim
+    entrypoint: ["python", "/exp/mock_llm.py"]
+    volumes:
+      - ./:/exp
+    expose:
+      - "9000"
+
+  litellm:
+    image: ghcr.io/berriai/litellm-database:v1.89.0
+    command: ["--config", "/exp/config.yaml", "--port", "4000", "--detailed_debug"]
+    environment:
+      DATABASE_URL: postgresql://llm:llm@postgres:5432/litellm
+      PYTHONPATH: /exp/patch
+      APPLY_PATCH: "${APPLY_PATCH:-0}"
+      LITELLM_LOG: DEBUG
+      STORE_MODEL_IN_DB: "False"
+    volumes:
+      - ./:/exp
+    ports:
+      - "4001:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-llm:
+        condition: service_started

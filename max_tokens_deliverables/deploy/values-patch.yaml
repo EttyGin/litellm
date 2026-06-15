@@ -1,0 +1,21 @@
+# Helm values overlay for the litellm-helm chart (deploy/charts/litellm-helm).
+# Mounts the ConfigMap patch and puts it on PYTHONPATH. No image rebuild.
+#
+#   kubectl apply -n <ns> -f configmap.yaml
+#   helm upgrade <release> ./deploy/charts/litellm-helm -n <ns> \
+#     -f my-values.yaml -f values-patch.yaml
+#
+# Chart keys used (verified against the chart's deployment.yaml):
+#   .Values.envVars (map), .Values.volumes (list), .Values.volumeMounts (list)
+
+envVars:
+  PYTHONPATH: /patch
+
+volumes:
+  - name: maxtokens-patch
+    configMap:
+      name: litellm-maxtokens-patch
+
+volumeMounts:
+  - name: maxtokens-patch
+    mountPath: /patch
