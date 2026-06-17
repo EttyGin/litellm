@@ -1,0 +1,8 @@
+{{- if .Values.sndFiles.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.sndFiles.configMapName }}
+data:
+{{ (.Files.Glob (printf "%s/*" .Values.sndFiles.dir)).AsConfig | indent 2 }}
+{{- end }}

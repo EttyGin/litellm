@@ -1,0 +1,155 @@
+# Self-contained Helm overlay for the system-prompt + max_tokens-debug stack.
+# Everything the old deploy/minikube-system-prompt/manifest.yaml did is expressed
+# here, so the release is the single source of truth:
+#
+#   helm dependency build .                # vendored postgres/redis subcharts
+#   helm upgrade --install litellm-snd . -n default -f values-snd.yaml
+#
+# The proxy image is pinned to the tag already loaded into minikube; flip
+# pullPolicy back to Always once it is pushed to a registry.
+
+image:
+  repository: ghcr.io/berriai/litellm-database
+  tag: "v1.89.0"
+  pullPolicy: IfNotPresent
+
+# Known master key so the mock requests stay reproducible (os.environ/PROXY_MASTER_KEY).
+masterkey: sk-1234
+
+# Self-contained Postgres, but via a plain postgres:16-alpine shipped as an
+# extraResource below rather than the vendored bitnami subchart: bitnami pulled
+# its old image tags from Docker Hub, so the subchart's pinned postgres image no
+# longer resolves. The plain image is already cached in minikube and pulls
+# anywhere. The proxy connects to it through db.useExisting.
+db:
+  deployStandalone: false
+  useExisting: true
+  endpoint: litellm-snd-postgres
+  database: litellm
+  secret:
+    name: litellm-snd-db
+    usernameKey: username
+    passwordKey: password
+
+proxy_config:
+  model_list:
+    - model_name: mock-gpt
+      litellm_params:
+        model: openai/mock-gpt
+        api_key: sk-dummy
+        mock_response: "Hi"
+    - model_name: mock-empty
+      litellm_params:
+        model: openai/mock-empty
+        api_key: sk-dummy
+        mock_response: " "
+  litellm_settings:
+    callbacks:
+      - system_prompt_injector.injector_instance
+      - system_prompt_injector.finish_reason_logger
+    # Required for the proxy to run its CHECK MAX TOKENS path and call
+    # get_modified_max_tokens, which the debug wrapper below wraps.
+    modify_params: true
+  general_settings:
+    master_key: os.environ/PROXY_MASTER_KEY
+
+envVars:
+  LITELLM_SYSTEM_PROMPT: "You must always end every reply with the exact token [SYSTEM-PROMPT-OK]."
+  # Makes CPython auto-import /patch/sitecustomize.py at interpreter startup.
+  PYTHONPATH: "/patch"
+  # Master switch for the self-debug instrumentation (the max_tokens ENTER/EXIT
+  # wrapper and the finish_reason RESULT line). When unset or falsy, sitecustomize
+  # leaves get_modified_max_tokens untouched and the RESULT callback is a no-op,
+  # so the mount and PYTHONPATH can stay in place with zero effect. Truthy values:
+  # 1, true, yes, on.
+  CUSTOM_DEBUG: "1"
+
+# Mount the two python files. The callback file must sit next to config.yaml in
+# the config dir (/etc/litellm); the debug wrapper goes on PYTHONPATH (/patch).
+volumeMounts:
+  - name: snd-files
+    mountPath: /etc/litellm/system_prompt_injector.py
+    subPath: system_prompt_injector.py
+  - name: snd-files
+    mountPath: /patch/sitecustomize.py
+    subPath: sitecustomize.py
+
+volumes:
+  - name: snd-files
+    configMap:
+      name: litellm-snd-files
+
+# The two python files live in the chart's files/ directory and are loaded into a
+# ConfigMap by templates/snd-files-configmap.yaml via .Files.Glob(...).AsConfig,
+# so there is no inline plain-text python here. Edit deploy/charts/litellm-helm/
+# files/*.py to change them.
+sndFiles:
+  enabled: true
+  dir: files
+  configMapName: litellm-snd-files
+
+extraResources:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: litellm-snd-db
+    type: Opaque
+    stringData:
+      username: litellm
+      password: litellm
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: litellm-snd-postgres
+      labels:
+        app: litellm-snd-postgres
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: litellm-snd-postgres
+      template:
+        metadata:
+          labels:
+            app: litellm-snd-postgres
+        spec:
+          containers:
+            - name: postgres
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: POSTGRES_USER
+                  value: litellm
+                - name: POSTGRES_PASSWORD
+                  value: litellm
+                - name: POSTGRES_DB
+                  value: litellm
+                - name: PGDATA
+                  value: /var/lib/postgresql/data/pgdata
+              ports:
+                - name: postgres
+                  containerPort: 5432
+              readinessProbe:
+                exec:
+                  command: ["pg_isready", "-U", "litellm", "-d", "litellm"]
+                initialDelaySeconds: 5
+                periodSeconds: 5
+              volumeMounts:
+                - name: data
+                  mountPath: /var/lib/postgresql/data
+          volumes:
+            - name: data
+              emptyDir: {}
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: litellm-snd-postgres
+      labels:
+        app: litellm-snd-postgres
+    spec:
+      selector:
+        app: litellm-snd-postgres
+      ports:
+        - name: postgres
+          port: 5432
+          targetPort: postgres
