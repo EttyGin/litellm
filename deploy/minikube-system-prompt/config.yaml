@@ -1,0 +1,18 @@
+model_list:
+  - model_name: mock-gpt
+    litellm_params:
+      model: openai/mock-gpt
+      api_key: sk-dummy
+      mock_response: "Hi"
+  - model_name: mock-empty
+    litellm_params:
+      model: openai/mock-empty
+      api_key: sk-dummy
+      mock_response: " "
+
+litellm_settings:
+  callbacks: ["system_prompt_injector.injector_instance"]
+  modify_params: true
+
+general_settings:
+  master_key: os.environ/PROXY_MASTER_KEY

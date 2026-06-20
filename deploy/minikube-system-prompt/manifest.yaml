@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-postgres
+  namespace: default
+  labels:
+    app: litellm-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm-postgres
+  template:
+    metadata:
+      labels:
+        app: litellm-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: litellm-secrets
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "litellm", "-d", "litellm"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-postgres
+  namespace: default
+  labels:
+    app: litellm-postgres
+spec:
+  selector:
+    app: litellm-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-system-prompt
+  namespace: default
+  labels:
+    app: litellm-system-prompt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm-system-prompt
+  template:
+    metadata:
+      labels:
+        app: litellm-system-prompt
+      annotations:
+        checksum/config: "REPLACED_AT_DEPLOY"
+    spec:
+      initContainers:
+        - name: wait-for-db
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - "until nc -z litellm-postgres 5432; do echo waiting for postgres; sleep 2; done"
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm-database:v1.89.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/litellm/config.yaml
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            - name: LITELLM_LOG
+              value: "INFO"
+            - name: LITELLM_SYSTEM_PROMPT
+              value: "You must always end every reply with the exact token [SYSTEM-PROMPT-OK]."
+            - name: LITELLM_MAX_TOKENS_CAPS
+              value: '{"mock-gpt": 1024, "mock-empty": 256}'
+            - name: LITELLM_MAX_TOKENS_DEFAULT_CAP
+              value: "512"
+            - name: PYTHONPATH
+              value: "/patch"
+          envFrom:
+            - secretRef:
+                name: litellm-secrets
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          volumeMounts:
+            - name: litellm-config
+              mountPath: /etc/litellm
+            - name: maxtokens-debug
+              mountPath: /patch
+      volumes:
+        - name: litellm-config
+          configMap:
+            name: litellm-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+              - key: system_prompt_injector.py
+                path: system_prompt_injector.py
+        - name: maxtokens-debug
+          configMap:
+            name: litellm-config
+            items:
+              - key: sitecustomize.py
+                path: sitecustomize.py
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-system-prompt
+  namespace: default
+  labels:
+    app: litellm-system-prompt
+spec:
+  selector:
+    app: litellm-system-prompt
+  ports:
+    - name: http
+      port: 4000
+      targetPort: http
