@@ -29,6 +29,10 @@ kubectl create configmap litellm-hooks -n <namespace> \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
+A ready-to-use example is in `values-hooks-example.yaml` next to this file;
+`helm template` confirms it renders the callback, the env vars, and the
+`subPath` mount correctly.
+
 ## 2. Add to your Helm values
 
 ```yaml

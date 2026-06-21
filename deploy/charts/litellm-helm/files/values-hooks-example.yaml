@@ -1,0 +1,41 @@
+# Example Helm values that wire system_prompt_injector.py into the chart.
+# See README.md in this directory for the full explanation.
+#
+# Prerequisite (the one step that is NOT in values, because the chart does not
+# auto-load files/): create the ConfigMap that holds the hook, from this dir:
+#
+#   kubectl create configmap litellm-hooks -n <ns> \
+#     --from-file=system_prompt_injector.py=system_prompt_injector.py \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# Then: helm upgrade --install <release> deploy/charts/litellm-helm -n <ns> -f this-file.yaml
+
+proxy_config:
+  model_list:
+    - model_name: gpt-3.5-turbo
+      litellm_params:
+        model: gpt-3.5-turbo
+        api_key: eXaMpLeOnLy
+  general_settings:
+    master_key: os.environ/PROXY_MASTER_KEY
+  litellm_settings:
+    # (2) register the callback; resolved as a file path relative to /etc/litellm
+    callbacks: ["system_prompt_injector.injector_instance"]
+
+# (3) mount the hook file next to config.yaml. subPath is required so this does
+# not shadow the rest of /etc/litellm (config.yaml lives there too).
+volumes:
+  - name: litellm-hooks
+    configMap:
+      name: litellm-hooks
+volumeMounts:
+  - name: litellm-hooks
+    mountPath: /etc/litellm/system_prompt_injector.py
+    subPath: system_prompt_injector.py
+
+# (4) configure behaviour. All optional; the hook has baked-in defaults.
+envVars:
+  LITELLM_LOG: "INFO"
+  LITELLM_SYSTEM_PROMPT: "Always end every reply with [SYSTEM-PROMPT-OK]."
+  LITELLM_MAX_TOKENS_CAPS: '{"gpt-3.5-turbo": 1024}'
+  LITELLM_MAX_TOKENS_DEFAULT_CAP: "2048"
