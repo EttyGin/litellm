@@ -250,6 +250,68 @@ def test_caps_loaded_from_env(monkeypatch):
     assert injector._max_tokens_cap("unlisted") == 128
 
 
+@pytest.fixture
+def delta_injector():
+    return SystemPromptInjector(instruction="FIXED INSTRUCTION", max_tokens_delta=10)
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_reduced_by_delta(delta_injector):
+    data = {
+        "model": "mock-gpt",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 100,
+    }
+    result = await _pre_call(delta_injector, data)
+    assert result["max_tokens"] == 90
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_reduced_by_delta_on_anthropic(delta_injector):
+    data = {
+        "model": "mock-gpt",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 50,
+    }
+    result = await _pre_call(delta_injector, data, call_type="anthropic_messages")
+    assert result["max_tokens"] == 40
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_delta_floors_at_one(delta_injector):
+    data = {
+        "model": "mock-gpt",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 6,
+    }
+    result = await _pre_call(delta_injector, data)
+    assert result["max_tokens"] == 1
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_delta_noop_when_request_omits_it(delta_injector):
+    data = {"model": "mock-gpt", "messages": [{"role": "user", "content": "hi"}]}
+    result = await _pre_call(delta_injector, data)
+    assert "max_tokens" not in result
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_no_delta_by_default(injector):
+    data = {
+        "model": "mock-gpt",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 100,
+    }
+    result = await _pre_call(injector, data)
+    assert result["max_tokens"] == 100
+
+
+def test_delta_loaded_from_env(monkeypatch):
+    monkeypatch.setenv("LITELLM_MAX_TOKENS_DELTA", "10")
+    injector = SystemPromptInjector(instruction="FIXED INSTRUCTION")
+    assert injector._max_tokens_delta == 10
+
+
 def _chat_response(content, tool_calls=None):
     message = Message(content=content, role="assistant", tool_calls=tool_calls)
     return ModelResponse(choices=[Choices(index=0, message=message)])
@@ -305,7 +367,9 @@ async def _stream(chunks):
 
 
 def _content_chunk(text):
-    return ModelResponseStream(choices=[StreamingChoices(index=0, delta=Delta(content=text))])
+    return ModelResponseStream(
+        choices=[StreamingChoices(index=0, delta=Delta(content=text))]
+    )
 
 
 @pytest.mark.asyncio

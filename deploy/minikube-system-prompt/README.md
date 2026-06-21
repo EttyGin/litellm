@@ -31,15 +31,19 @@ The hook ships next to `config.yaml` because LiteLLM resolves a dotted
 importable module. The fixed instruction is read from the `LITELLM_SYSTEM_PROMPT`
 env var (set on the Deployment) and falls back to a default baked into the hook.
 
-The `max_tokens` ceiling is per-model and read from the deployment env:
-`LITELLM_MAX_TOKENS_CAPS` is a JSON map of `model_name -> cap`, and
-`LITELLM_MAX_TOKENS_DEFAULT_CAP` applies to any model not in that map. The cap
-is a ceiling plus a default: a request above the cap is clamped down, a request
-that omits `max_tokens` gets the cap, and a request below the cap is left
-untouched. LiteLLM's native clamp (`modify_params` + the model registry) only
-shrinks toward a model's published output limit, so it cannot supply a default
-or a deployment-chosen per-model value; the hook covers that and applies to
-`/v1/messages` as well.
+The hook adjusts `max_tokens` from the deployment env, and this deployment uses
+`LITELLM_MAX_TOKENS_DELTA: "10"`: every request that carries `max_tokens` has it
+reduced by 10 (floored at 1), so a caller asking for 100 is sent 90. It applies
+to both `/v1/chat/completions` and `/v1/messages`.
+
+Two more knobs exist for a per-model ceiling instead of (or on top of) the delta:
+`LITELLM_MAX_TOKENS_CAPS` is a JSON map of `model_name -> cap` and
+`LITELLM_MAX_TOKENS_DEFAULT_CAP` applies to models not in that map; a cap clamps
+requests above it and supplies a default when `max_tokens` is omitted. The delta
+is applied first, then the cap. Leave a knob unset to disable it. LiteLLM's
+native clamp (`modify_params` + the model registry) only shrinks toward a model's
+published output limit, so it cannot reduce by a fixed amount or supply a
+deployment-chosen value; the hook covers that.
 
 ## Deploy
 
@@ -105,9 +109,8 @@ Deployment), so the prepend is greppable without DEBUG noise:
 kubectl logs -n default deploy/litellm-system-prompt -f \
   | sed -r 's/\x1b\[[0-9;]*m//g' | grep --line-buffered system_prompt_injector
 # -> system_prompt_injector: prepended fixed system prompt (call_type=acompletion, messages=2) -> '...'
-# -> system_prompt_injector: enforced max_tokens cap (model=mock-gpt, requested=None) -> 1024
+# -> system_prompt_injector: reduced max_tokens by 10 (model=mock-gpt, requested=50000) -> 49990
 # -> system_prompt_injector: set fixed system prompt (call_type=anthropic_messages) -> '...'
-# -> system_prompt_injector: enforced max_tokens cap (model=mock-gpt, requested=50000) -> 1024
 ```
 
 ## max_tokens debug wrapper

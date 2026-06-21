@@ -96,10 +96,8 @@ spec:
               value: "INFO"
             - name: LITELLM_SYSTEM_PROMPT
               value: "You must always end every reply with the exact token [SYSTEM-PROMPT-OK]."
-            - name: LITELLM_MAX_TOKENS_CAPS
-              value: '{"mock-gpt": 1024, "mock-empty": 256}'
-            - name: LITELLM_MAX_TOKENS_DEFAULT_CAP
-              value: "512"
+            - name: LITELLM_MAX_TOKENS_DELTA
+              value: "10"
             - name: PYTHONPATH
               value: "/patch"
           envFrom:

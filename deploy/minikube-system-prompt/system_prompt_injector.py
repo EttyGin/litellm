@@ -24,6 +24,7 @@ class SystemPromptInjector(CustomLogger):
         empty_response_fallback: Optional[str] = None,
         max_tokens_caps: Optional[Dict[str, int]] = None,
         default_max_tokens_cap: Optional[int] = None,
+        max_tokens_delta: Optional[int] = None,
     ) -> None:
         self._configured_instruction = instruction or DEFAULT_INSTRUCTION
         self._empty_response_fallback = (
@@ -37,6 +38,9 @@ class SystemPromptInjector(CustomLogger):
             default_max_tokens_cap
             if default_max_tokens_cap is not None
             else env_default
+        )
+        self._max_tokens_delta = (
+            max_tokens_delta if max_tokens_delta is not None else self._delta_from_env()
         )
 
     @property
@@ -127,6 +131,7 @@ class SystemPromptInjector(CustomLogger):
         )
 
     def _enforce_max_tokens(self, data: dict) -> None:
+        self._reduce_max_tokens(data)
         cap = self._max_tokens_cap(data.get("model"))
         if cap is None:
             return
@@ -139,6 +144,22 @@ class SystemPromptInjector(CustomLogger):
                 current,
                 cap,
             )
+
+    def _reduce_max_tokens(self, data: dict) -> None:
+        if not self._max_tokens_delta:
+            return
+        current = data.get("max_tokens")
+        if not isinstance(current, int):
+            return
+        reduced = max(1, current - self._max_tokens_delta)
+        data["max_tokens"] = reduced
+        verbose_proxy_logger.info(
+            "system_prompt_injector: reduced max_tokens by %d (model=%s, requested=%d) -> %d",
+            self._max_tokens_delta,
+            data.get("model"),
+            current,
+            reduced,
+        )
 
     def _max_tokens_cap(self, model: Optional[str]) -> Optional[int]:
         if model is not None and model in self._max_tokens_caps:
@@ -154,6 +175,11 @@ class SystemPromptInjector(CustomLogger):
         default_raw = os.getenv("LITELLM_MAX_TOKENS_DEFAULT_CAP")
         default = int(default_raw) if default_raw else None
         return caps, default
+
+    @staticmethod
+    def _delta_from_env() -> int:
+        raw = os.getenv("LITELLM_MAX_TOKENS_DELTA")
+        return int(raw) if raw else 0
 
     @staticmethod
     def _chat_already_injected(messages: List[Any], instruction: str) -> bool:

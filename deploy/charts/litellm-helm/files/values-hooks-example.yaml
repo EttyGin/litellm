@@ -37,5 +37,7 @@ volumeMounts:
 envVars:
   LITELLM_LOG: "INFO"
   LITELLM_SYSTEM_PROMPT: "Always end every reply with [SYSTEM-PROMPT-OK]."
-  LITELLM_MAX_TOKENS_CAPS: '{"gpt-3.5-turbo": 1024}'
-  LITELLM_MAX_TOKENS_DEFAULT_CAP: "2048"
+  LITELLM_MAX_TOKENS_DELTA: "10" # reduce every request's max_tokens by 10
+  # Optional per-model ceiling instead of / on top of the delta:
+  # LITELLM_MAX_TOKENS_CAPS: '{"gpt-3.5-turbo": 1024}'
+  # LITELLM_MAX_TOKENS_DEFAULT_CAP: "2048"

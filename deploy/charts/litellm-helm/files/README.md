@@ -56,16 +56,19 @@ volumeMounts:
 envVars:
   LITELLM_LOG: "INFO"                       # so the INFO inject/cap lines show
   LITELLM_SYSTEM_PROMPT: "Your fixed instruction here."
-  LITELLM_MAX_TOKENS_CAPS: '{"gpt-4o": 4096, "gpt-3.5-turbo": 1024}'
-  LITELLM_MAX_TOKENS_DEFAULT_CAP: "2048"
+  LITELLM_MAX_TOKENS_DELTA: "10"            # reduce every request's max_tokens by 10
+  # Optional per-model ceiling instead of / on top of the delta:
+  # LITELLM_MAX_TOKENS_CAPS: '{"gpt-4o": 4096, "gpt-3.5-turbo": 1024}'
+  # LITELLM_MAX_TOKENS_DEFAULT_CAP: "2048"
 ```
 
 `subPath` is required: it mounts the single file without hiding the rest of
-`/etc/litellm`. The `max_tokens` cap is a ceiling plus default: a request above
-the cap is clamped, a request that omits `max_tokens` gets the cap, and a
-request below the cap is left untouched. `LITELLM_MAX_TOKENS_CAPS` is a JSON map
-of `model_name -> cap`; `LITELLM_MAX_TOKENS_DEFAULT_CAP` applies to any model not
-in that map. Omit both to disable the cap.
+`/etc/litellm`. `LITELLM_MAX_TOKENS_DELTA` reduces every request's `max_tokens`
+by that amount (floored at 1). The optional cap is a ceiling plus default:
+`LITELLM_MAX_TOKENS_CAPS` is a JSON map of `model_name -> cap` and
+`LITELLM_MAX_TOKENS_DEFAULT_CAP` applies to any model not in that map; a request
+above the cap is clamped and a request that omits `max_tokens` gets the cap. The
+delta is applied first, then the cap. Omit a knob to disable it.
 
 ## 3. Roll it out
 
