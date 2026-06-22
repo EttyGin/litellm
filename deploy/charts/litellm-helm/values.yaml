@@ -424,3 +424,10 @@ serviceMonitor:
   namespaceSelector:
     matchNames: []
     # - test-namespace
+
+# Optionally ship the patch/hook ConfigMap from this chart's files/ directory
+# (see templates/configmap-snd-files.yaml). Disabled by default.
+sndFiles:
+  enabled: false
+  configMapName: litellm-snd-files
+  dir: files

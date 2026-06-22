@@ -1,0 +1,24 @@
+{{- /*
+  Auto-create the patch/hook ConfigMap from the chart's files/ directory, so
+  the runtime patches (sitecustomize.py + the modules it imports) and the
+  system_prompt_injector hook are shipped with the chart — no manual
+  `kubectl create configmap` step.
+
+  Enable with:
+    sndFiles:
+      enabled: true
+      configMapName: litellm-snd-files
+      dir: files          # glob is "<dir>/*.py"
+
+  .Files.Glob(...).AsConfig renders each matched file as "<basename>: <content>".
+*/ -}}
+{{- if .Values.sndFiles.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.sndFiles.configMapName }}
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+data:
+{{ (.Files.Glob (printf "%s/*.py" (.Values.sndFiles.dir | default "files"))).AsConfig | indent 2 }}
+{{- end }}

@@ -1,0 +1,134 @@
+# Helm values for the `litellm-snd` release (minikube).
+#
+# This file is the durable source of the running config. It pins the runtime
+# patches in deploy/charts/litellm-helm/files/ into the container via /patch.
+#
+# The patch/hook ConfigMap (litellm-snd-files) is now created by the chart
+# itself from files/*.py (sndFiles.enabled below + templates/configmap-snd-files.yaml),
+# so there is NO manual `kubectl create configmap` step. Just deploy:
+#
+#   helm upgrade --install litellm-snd deploy/charts/litellm-helm -f deploy/charts/litellm-helm/values-snd.yaml
+
+# Build the litellm-snd-files ConfigMap from files/*.py as part of the release.
+sndFiles:
+  enabled: true
+  configMapName: litellm-snd-files
+  dir: files
+
+image:
+  repository: ghcr.io/berriai/litellm-database
+  tag: v1.89.0
+  pullPolicy: IfNotPresent
+
+masterkey: sk-1234
+
+db:
+  useExisting: true
+  deployStandalone: false
+  endpoint: litellm-snd-postgres
+  database: litellm
+  secret:
+    name: litellm-snd-db
+    usernameKey: username
+    passwordKey: password
+
+envVars:
+  PYTHONPATH: /patch            # makes the /patch modules importable at startup
+  CUSTOM_DEBUG: "1"             # toggles maxtokens_debug.py
+  EMPTY_CONTENT_GUARD: "1"      # toggles empty_content_guard.py (the stop/empty fix)
+  LITELLM_SYSTEM_PROMPT: You must always end every reply with the exact token [SYSTEM-PROMPT-OK].
+
+proxy_config:
+  general_settings:
+    master_key: os.environ/PROXY_MASTER_KEY
+  litellm_settings:
+    modify_params: true
+    callbacks:
+    - system_prompt_injector.injector_instance
+  model_list:
+  - model_name: mock-gpt
+    litellm_params:
+      model: openai/mock-gpt
+      api_key: sk-dummy
+      mock_response: Hi
+  - model_name: mock-empty
+    litellm_params:
+      model: openai/mock-empty
+      api_key: sk-dummy
+      mock_response: ' '
+
+# Wire the patch ConfigMap into the container.
+#  - /patch is mounted as a DIRECTORY (no subPath) so every module in
+#    litellm-snd-files lands on PYTHONPATH and sitecustomize.py can import its
+#    siblings (maxtokens_debug, empty_content_guard). Mounting a single file via
+#    subPath would hide the sibling modules and the guard would fail to install.
+#  - system_prompt_injector.py is also surfaced next to config.yaml for the
+#    callback path, via its own subPath mount.
+volumes:
+- name: snd-files
+  configMap:
+    name: litellm-snd-files
+volumeMounts:
+- name: snd-files
+  mountPath: /patch
+- name: snd-files
+  mountPath: /etc/litellm/system_prompt_injector.py
+  subPath: system_prompt_injector.py
+
+# Standalone postgres + db secret for this release.
+extraResources:
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: litellm-snd-db
+  type: Opaque
+  stringData:
+    username: litellm
+    password: litellm
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: litellm-snd-postgres
+    labels:
+      app: litellm-snd-postgres
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: litellm-snd-postgres
+    template:
+      metadata:
+        labels:
+          app: litellm-snd-postgres
+      spec:
+        containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+          - { name: POSTGRES_USER, value: litellm }
+          - { name: POSTGRES_PASSWORD, value: litellm }
+          - { name: POSTGRES_DB, value: litellm }
+          - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+          - { name: postgres, containerPort: 5432 }
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "litellm", "-d", "litellm"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+          - { name: data, mountPath: /var/lib/postgresql/data }
+        volumes:
+        - { name: data, emptyDir: {} }
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: litellm-snd-postgres
+    labels:
+      app: litellm-snd-postgres
+  spec:
+    selector:
+      app: litellm-snd-postgres
+    ports:
+    - { name: postgres, port: 5432, targetPort: postgres }
