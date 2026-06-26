@@ -1,0 +1,78 @@
+# Helm values for the `litellm-clamp` release (minikube), wired to the
+# max_tokens-clamp hooks shipped in files/.
+#
+# Deploy via the official chart:
+#   helm upgrade --install litellm-clamp deploy/charts/litellm-helm \
+#     -f deploy/charts/litellm-helm/values-clamp.yaml
+#
+# The hook files (clamp_drop_always.py, clamp_generic_exact.py) live in files/
+# and are bundled into a ConfigMap by the chart (sndFiles below), mounted on
+# /patch (PYTHONPATH), and registered via litellm_settings.callbacks.
+
+# Build the litellm-clamp-files ConfigMap from files/*.py as part of the release.
+sndFiles:
+  enabled: true
+  configMapName: litellm-clamp-files
+  dir: files
+
+replicaCount: 1
+
+# Proxy-only (no DB) -> uses the non-database image and skips Postgres/migrations.
+image:
+  repository: ghcr.io/berriai/litellm
+  tag: v1.83.7-stable
+  pullPolicy: IfNotPresent
+
+masterkey: sk-1234
+
+db:
+  deployStandalone: false
+  useExisting: false
+
+migrationJob:
+  enabled: false
+
+redis:
+  enabled: false
+
+resources:
+  requests: { cpu: 200m, memory: 512Mi }
+  limits: { cpu: "2", memory: 2Gi }
+
+envVars:
+  LITELLM_LOG: "INFO"
+
+proxy_config:
+  general_settings:
+    master_key: os.environ/PROXY_MASTER_KEY
+  litellm_settings:
+    # Active hook. Alternatives shipped in files/:
+    #   clamp_drop_always.proxy_handler_instance   -> generic, zero-latency, drops max_tokens
+    #   clamp_generic_exact.proxy_handler_instance -> generic, exact (one /tokenize per request)
+    callbacks:
+      - clamp_drop_always.proxy_handler_instance
+  model_list:
+    - model_name: qwen-0.5b
+      litellm_params:
+        model: openai/qwen-0.5b
+        api_base: http://vllm:8000/v1
+        api_key: dummy
+      model_info:
+        max_tokens: 100
+        max_input_tokens: 100
+        max_output_tokens: 100
+
+# Mount each hook file next to config.yaml. subPath is required so it doesn't
+# shadow /etc/litellm (config.yaml lives there too). The proxy adds /etc/litellm
+# to sys.path, which makes the callback module importable by name.
+volumes:
+  - name: clamp-files
+    configMap:
+      name: litellm-clamp-files
+volumeMounts:
+  - name: clamp-files
+    mountPath: /etc/litellm/clamp_drop_always.py
+    subPath: clamp_drop_always.py
+  - name: clamp-files
+    mountPath: /etc/litellm/clamp_generic_exact.py
+    subPath: clamp_generic_exact.py
