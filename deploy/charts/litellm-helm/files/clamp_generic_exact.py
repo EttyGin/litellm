@@ -36,6 +36,7 @@ Wire up via litellm config:
     litellm_settings:
       callbacks: ["clamp_generic_exact.proxy_handler_instance"]
 """
+
 import logging
 import os
 from typing import Any, Optional, Tuple
@@ -45,8 +46,8 @@ import httpx
 from litellm._logging import verbose_proxy_logger
 from litellm.integrations.custom_logger import CustomLogger
 
-_CHAT_CALLS = {"completion", "acompletion"}
 _LOG_PREFIX = "[clamp_generic_exact]"
+_MAX_TOKEN_FIELDS = ("max_tokens", "max_completion_tokens")
 FALLBACK_TOKENIZE_URL = os.getenv("VLLM_TOKENIZE_URL")  # optional last resort
 _PROVIDER_PREFIXES = ("openai/", "hosted_vllm/", "vllm/", "litellm_proxy/")
 # A client uses this header to explicitly opt OUT (= "honour my max_tokens").
@@ -59,27 +60,38 @@ def _ensure_info_level() -> None:
         verbose_proxy_logger.setLevel(logging.INFO)
 
 
+def _request_headers(data: dict) -> dict:
+    for src in (
+        data.get("metadata"),
+        data.get("litellm_metadata"),
+        data.get("proxy_server_request"),
+    ):
+        headers = (src or {}).get("headers")
+        if headers:
+            return headers
+    return data.get("headers") or {}
+
+
 def client_opted_out(data: dict) -> bool:
     """True if the client sent the opt-out header to HONOUR their max_tokens."""
     if not BYPASS_HEADER:
         return False
-    md = data.get("metadata") or {}
-    headers = md.get("headers") or data.get("headers") or {}
-    val = headers.get(BYPASS_HEADER)  # header names arrive lower-cased
+    val = _request_headers(data).get(BYPASS_HEADER)  # header names arrive lower-cased
     return val is not None and str(val).lower() in _TRUTHY
 
 
 def _strip_provider(model: str) -> str:
     for p in _PROVIDER_PREFIXES:
         if model.startswith(p):
-            return model[len(p):]
+            return model[len(p) :]
     return model
 
 
 class ClampGenericExact(CustomLogger):
-    def __init__(self) -> None:
+    def __init__(self, window_info: Optional[Any] = None) -> None:
         super().__init__()
         self._client = httpx.AsyncClient(timeout=10.0)
+        self._window_info = window_info or self._default_window_info
 
     @staticmethod
     def _resolve(model: Optional[str]) -> Optional[Tuple[str, str]]:
@@ -121,6 +133,32 @@ class ClampGenericExact(CustomLogger):
             return None
         return int(count), int(mml)
 
+    async def _default_window_info(
+        self, data: dict, model: Optional[str]
+    ) -> Optional[Tuple[int, int]]:
+        backend = self._resolve(model)
+        if backend is None and FALLBACK_TOKENIZE_URL:
+            backend = (FALLBACK_TOKENIZE_URL, _strip_provider(model or ""))
+        if backend is None:
+            verbose_proxy_logger.warning(
+                "%s model=%s -> no tokenize endpoint, passing through",
+                _LOG_PREFIX,
+                model,
+            )
+            return None
+        url, served = backend
+        try:
+            return await self._tokenize(data, url, served)
+        except Exception as e:
+            verbose_proxy_logger.warning(
+                "%s model=%s -> tokenize failed (%s) at %s, passing through",
+                _LOG_PREFIX,
+                model,
+                type(e).__name__,
+                url,
+            )
+            return None
+
     async def async_pre_call_hook(
         self,
         user_api_key_dict: Any,
@@ -128,39 +166,21 @@ class ClampGenericExact(CustomLogger):
         data: dict,
         call_type: str,
     ) -> Optional[dict]:
-        if call_type not in _CHAT_CALLS:
+        field = next((f for f in _MAX_TOKEN_FIELDS if data.get(f) is not None), None)
+        if field is None:
             return data
+        requested = data[field]
         _ensure_info_level()
         model = data.get("model")
-        requested = data.get("max_tokens")
-        if requested is None:
-            return data
         if client_opted_out(data):
             verbose_proxy_logger.info(
                 "%s model=%s -> client opted out (honour max_tokens), unchanged",
-                _LOG_PREFIX, model,
+                _LOG_PREFIX,
+                model,
             )
             return data
 
-        backend = self._resolve(model)
-        if backend is None and FALLBACK_TOKENIZE_URL:
-            backend = (FALLBACK_TOKENIZE_URL, _strip_provider(model or ""))
-        if backend is None:
-            verbose_proxy_logger.warning(
-                "%s model=%s -> no tokenize endpoint, passing through",
-                _LOG_PREFIX, model,
-            )
-            return data
-        url, served = backend
-
-        try:
-            info = await self._tokenize(data, url, served)
-        except Exception as e:
-            verbose_proxy_logger.warning(
-                "%s model=%s -> tokenize failed (%s) at %s, passing through",
-                _LOG_PREFIX, model, type(e).__name__, url,
-            )
-            return data
+        info = await self._window_info(data, model)
         if info is None:
             return data
 
@@ -170,21 +190,34 @@ class ClampGenericExact(CustomLogger):
             verbose_proxy_logger.info(
                 "%s model=%s prompt_tokens=%s max_model_len=%s -> PROMPT "
                 "OVERFLOWS, unchanged (will 400)",
-                _LOG_PREFIX, model, prompt_tokens, max_model_len,
+                _LOG_PREFIX,
+                model,
+                prompt_tokens,
+                max_model_len,
             )
             return data
         if requested > available:
-            data["max_tokens"] = available
+            data[field] = available
             verbose_proxy_logger.info(
                 "%s model=%s prompt_tokens=%s max_model_len=%s -> CLAMPED "
-                "max_tokens %s -> %s",
-                _LOG_PREFIX, model, prompt_tokens, max_model_len, requested, available,
+                "%s %s -> %s",
+                _LOG_PREFIX,
+                model,
+                prompt_tokens,
+                max_model_len,
+                field,
+                requested,
+                available,
             )
         else:
             verbose_proxy_logger.info(
                 "%s model=%s prompt_tokens=%s max_model_len=%s available=%s "
                 "-> HONOURED (fits)",
-                _LOG_PREFIX, model, prompt_tokens, max_model_len, available,
+                _LOG_PREFIX,
+                model,
+                prompt_tokens,
+                max_model_len,
+                available,
             )
         return data
 
