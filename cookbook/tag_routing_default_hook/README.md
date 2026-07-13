@@ -29,11 +29,13 @@ native default-deployment fallback in `get_deployments_for_tag`, so:
 - **Request tags are never modified** — tag-based spend-logging, budgets and
   analytics keep working (the request's own tag is still recorded).
 
-It only walks the model list when the deployment count changed since the last
-request (a single `len()` compare in steady state), so it adds no meaningful
-per-request latency. That still normalizes models added at runtime via
-`/model/new` — LiteLLM exposes no "model added" callback, and this avoids
-monkeypatching router internals.
+It re-scans the model list on every request, so the tag is (re)applied even if
+a model is added at runtime via `/model/new`, or has its tag removed via
+`/model/update` or a direct edit — the model is normalized again on the very
+next request. The scan is a plain in-memory loop (measured ~11µs for 200
+deployments, ~0.27ms for 5000) and the write is idempotent, so already-tagged
+models are skipped. This avoids hooking the model-add path (LiteLLM exposes no
+such callback) or monkeypatching router internals.
 
 ## Usage
 
