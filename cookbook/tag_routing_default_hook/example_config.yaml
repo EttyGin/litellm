@@ -1,0 +1,39 @@
+model_list:
+  # multi-instance model: strict 1:1 tag routing.
+  # each deployment is reachable only by its own tag.
+  - model_name: my-model
+    litellm_params:
+      model: openai/my-model
+      api_key: fake-key
+      mock_response: "RESPONSE-FROM-INSTANCE-A"
+      tags: ["instance-a"]
+    model_info:
+      id: "deployment-a"
+  - model_name: my-model
+    litellm_params:
+      model: openai/my-model
+      api_key: fake-key
+      mock_response: "RESPONSE-FROM-INSTANCE-B"
+      tags: ["instance-b"]
+    model_info:
+      id: "deployment-b"
+
+  # single-instance shared model, intentionally left WITHOUT tags.
+  # the hook auto-assigns it tags: ["default"] so tagged keys can still reach it.
+  - model_name: solo-model
+    litellm_params:
+      model: openai/solo-model
+      api_key: fake-key
+      mock_response: "RESPONSE-FROM-SOLO"
+    model_info:
+      id: "deployment-solo"
+
+router_settings:
+  enable_tag_filtering: True
+
+litellm_settings:
+  callbacks: custom_callbacks.proxy_handler_instance
+
+general_settings:
+  master_key: sk-test-1234
+  store_model_in_db: true   # lets /model/new add models at runtime (also normalized by the hook)
